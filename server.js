@@ -8,7 +8,7 @@ const { conversations, createConversation } = require('@grammyjs/conversations')
 
 const app = express();
 app.use(express.json());
-
+app.get('/api/health', (req, res) => res.json({ ok: true, file: 'server.js' }));
 // ==========================================
 // ENV VALIDATION
 // ==========================================
@@ -194,7 +194,7 @@ const CATEGORIES = {
 };
 
 const CATEGORY_PRICES = {
-    'cat_1': { 'WEEKLY': 199, 'MONTHLY': 399, 'QUARTERLY': 999, 'LIFETIME': 1299 },
+    'cat_1': { 'WEEKLY': 1, 'MONTHLY': 399, 'QUARTERLY': 999, 'LIFETIME': 1299 },
     'cat_2': { 'WEEKLY': 299, 'MONTHLY': 499, 'QUARTERLY': 899, 'LIFETIME': 1199 },
     'cat_3': { 'WEEKLY': 199, 'MONTHLY': 399, 'QUARTERLY': 499, 'LIFETIME': 1199 },
     'cat_4': { 'WEEKLY': 199, 'MONTHLY': 299, 'QUARTERLY': 899, 'LIFETIME': 1299 },
@@ -2500,4 +2500,4 @@ bot.catch((err) => {
 // ==========================================
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🌐 Server listening on port ${PORT}`));
-bot.start({ onStart: (botInfo) => console.log(`🤖 Bot @${botInfo.username} started!`) });
+bot.start({ onStart: (botInfo) => console.log(`🤖 Bot @${botInfo.username} started!`) })
