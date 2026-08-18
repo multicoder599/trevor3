@@ -1088,15 +1088,20 @@ bot.use(createConversation(mpesaPrompt));
 
 // ==========================================
 // MEGAPAY WEBHOOK
-// ==========================================
 app.post('/api/megapay/webhook', async (req, res) => {
-    res.status(200).send("OK");
-    const data = req.body;
+    // 1. Acknowledge webhook immediately to keep gateway happy
+    res.status(200).json({ status: 'OK' });
 
     try {
+        // 2. Unencapsulate payload if wrapped inside nested objects (e.g., Body.stkCallback)
+        let data = req.body || {};
+        if (data.Body?.stkCallback) data = data.Body.stkCallback;
+        if (data.data) data = data.data;
+
         console.log('[WEBHOOK] Raw body:', JSON.stringify(data));
 
         function getField(obj, ...names) {
+            if (!obj || typeof obj !== 'object') return undefined;
             for (const name of names) {
                 if (obj[name] !== undefined) return obj[name];
                 const lower = name.toLowerCase();
@@ -1117,15 +1122,20 @@ app.post('/api/megapay/webhook', async (req, res) => {
 
         console.log(`[WEBHOOK] Parsed: code=${responseCode}, desc=${resultDesc}, receipt=${receipt}, phoneLast9=${last9}, ref=${callbackRef}`);
 
+        if (responseCode === undefined) {
+            console.log('[WEBHOOK] Warning: Could not find ResultCode/ResponseCode in payload keys:', Object.keys(data));
+            return;
+        }
+
+        // Handle Payment Failure
         if (parseInt(responseCode) !== 0) {
             console.log(`[WEBHOOK] Payment failed with code: ${responseCode} — ${resultDesc}`);
 
             let failedTx = null;
-
             if (last9.length >= 9) {
                 const dbTxs = await PendingTransaction.find({});
                 for (const tx of dbTxs) {
-                    if (tx.phone.replace(/\D/g, '').endsWith(last9)) {
+                    if (tx.phone && tx.phone.replace(/\D/g, '').endsWith(last9)) {
                         failedTx = tx;
                         break;
                     }
@@ -1143,25 +1153,30 @@ app.post('/api/megapay/webhook', async (req, res) => {
 
             if (failedTx) {
                 let failMsg = `❌ *Payment Failed*\n\n`;
-                if (parseInt(responseCode) === 1032) {
+                const code = parseInt(responseCode);
+                if (code === 1032) {
                     failMsg += `You cancelled the M-Pesa prompt on your phone.\n\nNo money was deducted. Tap below to try again 👇`;
-                } else if (parseInt(responseCode) === 1037) {
+                } else if (code === 1037) {
                     failMsg += `M-Pesa session timed out. You didn't enter your PIN in time.\n\nTap below to try again 👇`;
-                } else if (parseInt(responseCode) === 2035) {
+                } else if (code === 2035) {
                     failMsg += `M-Pesa could not complete this transaction. Usually means:\n• Wrong PIN entered\n• Insufficient balance\n• You cancelled the prompt\n\nNo money was deducted. Tap below to try again 👇`;
                 } else {
                     failMsg += `Reason: ${resultDesc || 'Unknown error'}\n\nTap below to try again 👇`;
                 }
+
                 const retryMenu = new InlineKeyboard()
                     .text("🔄 Try Again", "back_home").row()
                     .text("🌍 Pay with Crypto", `payment_intl_${failedTx.plan}_${failedTx.amount}_${failedTx.categoryKey || 'cat_1'}`).row()
                     .url("💬 Support", `https://t.me/${SUPPORT_USER}`);
+
                 try {
                     await bot.api.sendMessage(failedTx.chatId || failedTx.userId, failMsg, {
                         parse_mode: "Markdown",
                         reply_markup: retryMenu
                     });
-                } catch (e) {}
+                } catch (e) {
+                    console.error('[WEBHOOK] Error sending failure message:', e.message);
+                }
 
                 await PendingTransaction.deleteOne({ _id: failedTx._id || failedTx.id }).catch(() => {});
                 if (failedTx.phone) pendingTransactions.delete(failedTx.phone);
@@ -1179,7 +1194,7 @@ app.post('/api/megapay/webhook', async (req, res) => {
 
         const dbTxs = await PendingTransaction.find({});
         for (const tx of dbTxs) {
-            if (tx.phone.replace(/\D/g, '').endsWith(last9)) {
+            if (tx.phone && tx.phone.replace(/\D/g, '').endsWith(last9)) {
                 transaction = tx;
                 matchedPhone = tx.phone;
                 console.log(`[WEBHOOK] MongoDB matched by phone: ${tx.phone}`);
@@ -1277,7 +1292,7 @@ app.post('/api/megapay/webhook', async (req, res) => {
 
         await logAction(transaction.userId, 'payment_success', 'organic', { plan: transaction.plan, amount, receipt });
 
-        const successText = `🎉 *PAYMENT SUCCESSFUL!*\n\nThank you for your payment! Your premium access is now ready.\n\n💰 *PAYMENT DETAILS*\n━━━━━━━━━━━━━━━\n▪️ Amount: KES ${amount}\n▪️ M-Pesa Receipt: ${receipt}\n▪️ Phone: ${rawCallbackPhone}\n▪️ Date: ${transaction.date}\n\n🔗 *CHANNEL ACCESS*\n━━━━━━━━━━━━━━━\n▪️ Channel: ${md(transaction.category)}\n▪️ Plan: ${md(transaction.plan)}\n▪️ Expires: ${endDate.toLocaleDateString()}\n\n⚠️ *ONE-TIME LINK:* This link can only be used *ONCE*. Once you click and join, it dies immediately. Do NOT share it.\n\nNeed help? Contact our support team.`;
+        const successText = `🎉 *PAYMENT SUCCESSFUL!*\n\nThank you for your payment! Your premium access is now ready.\n\n💰 *PAYMENT DETAILS*\n━━━━━━━━━━━━━━━\n▪️ Amount: KES ${amount}\n▪️ M-Pesa Receipt: ${receipt}\n▪️ Phone: ${rawCallbackPhone}\n▪️ Date: ${transaction.date || new Date().toISOString()}\n\n🔗 *CHANNEL ACCESS*\n━━━━━━━━━━━━━━━\n▪️ Channel: ${md(transaction.category)}\n▪️ Plan: ${md(transaction.plan)}\n▪️ Expires: ${endDate.toLocaleDateString()}\n\n⚠️ *ONE-TIME LINK:* This link can only be used *ONCE*. Once you click and join, it dies immediately. Do NOT share it.\n\nNeed help? Contact our support team.`;
 
         const linkMenu = new InlineKeyboard()
             .url(`🔗 JOIN ${md(transaction.category)} 🔗`, invite.invite_link).row()
@@ -1296,7 +1311,7 @@ app.post('/api/megapay/webhook', async (req, res) => {
         console.log(`✅ Subscription activated: ${transaction.category} ${transaction.plan} for ${transaction.userId} until ${endDate.toISOString()}`);
 
     } catch (err) {
-        console.error("[WEBHOOK] Fatal Error:", err.message);
+        console.error("[WEBHOOK] Fatal Error:", err.stack || err.message);
     }
 });
 
